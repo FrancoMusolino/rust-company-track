@@ -1,4 +1,3 @@
-use colored::Colorize;
 use cuid;
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -12,7 +11,7 @@ struct Employee {
 #[derive(Debug, Default)]
 pub struct Company {
     pub departments: Vec<String>,
-    list: HashMap<String, Vec<String>>,
+    pub list: HashMap<String, Vec<String>>,
 }
 
 impl Company {
@@ -86,8 +85,6 @@ impl Company {
                 &[&employee_id, &normalized_employee, &department_id],
             )?;
 
-            println!("Departamento: {}, Empleado: {}", department_id, employee_id);
-
             self.departments.push(normalized_department);
             self.list.insert(
                 self.departments.last().unwrap().clone(),
@@ -98,21 +95,10 @@ impl Company {
         }
     }
 
-    pub fn view_list(&self) {
-        for department in self.list.keys() {
-            println!(
-                "\n{}",
-                format!("Department {}", department).bold().underline()
-            );
-
-            let employees = self.list.get(department).unwrap();
-
-            for (i, employee) in employees.iter().enumerate() {
-                println!("{}. {}", i + 1, employee);
-            }
-
-            println!();
-        }
+    pub fn get_total_employees(&self) -> u32 {
+        self.list.iter().fold(0, |acc, (department, _)| {
+            acc + (self.list.get(department).unwrap().len() as u32)
+        })
     }
 
     fn has_department(&self, department: &String) -> bool {

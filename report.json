@@ -1,0 +1,10 @@
+{
+  "company_distribution": {
+    "it": "22.22% (2 employees)",
+    "marketing": "33.33% (3 employees)",
+    "sales": "22.22% (2 employees)",
+    "warehouse": "22.22% (2 employees)"
+  },
+  "departments": 4,
+  "employees": 9
+}

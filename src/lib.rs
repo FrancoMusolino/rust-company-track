@@ -1,6 +1,14 @@
+use colored::Colorize;
 use dialoguer::{theme::ColorfulTheme, Select};
 use rusqlite::Connection;
-use std::{error::Error, io::stdin};
+use serde_json::json;
+use std::{
+    collections::HashMap,
+    error::Error,
+    fs::File,
+    io::{stdin, Write},
+    path::Path,
+};
 
 pub mod company;
 pub use company::Company;
@@ -58,6 +66,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         match next {
             Possibilities::AddEntry => add_new_entry(&connection)?,
             Possibilities::ViewList => view_list(&connection)?,
+            Possibilities::GenerateReport => generate_report(&connection)?,
             _ => (),
         }
 
@@ -108,7 +117,52 @@ fn ask_for_department(departments: &[String]) -> Result<String, Box<dyn Error>> 
 fn view_list(connection: &Connection) -> Result<(), Box<dyn Error>> {
     let company = Company::build_from_existing(&connection)?;
 
-    company.view_list();
+    for department in company.list.keys() {
+        println!(
+            "\n{}",
+            format!("Department {}", department).bold().underline()
+        );
+
+        let employees = company.list.get(department).unwrap();
+
+        for (i, employee) in employees.iter().enumerate() {
+            println!("{}. {}", i + 1, employee);
+        }
+
+        println!();
+    }
+
+    Ok(())
+}
+
+fn generate_report(connection: &Connection) -> Result<(), Box<dyn Error>> {
+    let company = Company::build_from_existing(&connection)?;
+
+    let path = Path::new("report.json");
+    let mut file = File::create(path)?;
+
+    let total_employees = company.get_total_employees();
+    let mut distribution: HashMap<&String, String> = HashMap::new();
+
+    for (department, employees) in company.list.iter() {
+        distribution.insert(
+            department,
+            format!(
+                "{:.2$}% ({} employees)",
+                ((employees.len() as f32) * 100.0) / (total_employees as f32),
+                employees.len(),
+                2,
+            ),
+        );
+    }
+
+    let report = json!({
+        "departments": company.departments.len(),
+        "employees": total_employees,
+        "company_distribution": distribution
+    });
+
+    file.write(&report.to_string().as_bytes())?;
 
     Ok(())
 }
