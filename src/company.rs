@@ -1,109 +1,169 @@
+use std::{error::Error, rc::Rc};
+
+use crate::{
+    domain::{AggregateRoot, DomainEvent, Repository},
+    Database,
+};
 use cuid;
-use rusqlite::Connection;
-use std::collections::HashMap;
 
 #[derive(Debug)]
-struct Employee {
-    name: String,
-    department: String,
+pub enum CompanyEvents {
+    DepartmentAdded(Rc<Department>),
+    EmployeeHired(Rc<Employee>),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
+pub struct Department {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug)]
+pub struct Employee {
+    id: String,
+    pub name: String,
+    pub department_id: String,
+}
+
+#[derive(Default, Debug)]
 pub struct Company {
-    pub departments: Vec<String>,
-    pub list: HashMap<String, Vec<String>>,
+    pub departments: Vec<Rc<Department>>,
+    pub employees: Vec<Rc<Employee>>,
+    events: Vec<DomainEvent<CompanyEvents>>,
 }
 
-impl Company {
-    pub fn build_from_existing(connection: &Connection) -> Result<Self, rusqlite::Error> {
-        let mut stmt = connection.prepare(
-            "SELECT e.name, d.name FROM employees e
-         RIGHT JOIN departments d
-         ON e.department_id = d.id;",
-        )?;
+impl AggregateRoot<CompanyEvents> for Company {
+    fn apply(&mut self, event: CompanyEvents) -> () {
+        self.events.push(DomainEvent { event })
+    }
 
-        let employees = stmt.query_map([], |row| {
-            Ok(Employee {
-                name: row.get(0).unwrap(),
-                department: row.get(1).unwrap(),
-            })
+    fn commit(&mut self) -> () {
+        self.events = Vec::new()
+    }
+
+    fn get_uncommited_events(&self) -> &Vec<DomainEvent<CompanyEvents>> {
+        &self.events
+    }
+}
+
+impl Repository<CompanyEvents, Company> for Company {
+    fn get(db: &Database) -> Result<Self, Box<dyn Error>> {
+        let mut company = Company::default();
+        let mut departments_stmt = db.prepare("SELECT * FROM departments")?;
+        let mut employees_stmt = db.prepare("SELECT * FROM employees WHERE department_id = $1")?;
+
+        let departments = departments_stmt.query_map([], |row| {
+            Ok(Rc::new(Department {
+                id: row.get(0).unwrap(),
+                name: row.get(1).unwrap(),
+            }))
         })?;
 
-        let mut company = Company::default();
+        for department in departments {
+            let dpt = department.unwrap();
 
-        for employee in employees {
-            let empl = employee.unwrap();
+            let employees = employees_stmt.query_map([&dpt.id], |row| {
+                Ok(Rc::new(Employee {
+                    id: row.get(0).unwrap(),
+                    name: row.get(1).unwrap(),
+                    department_id: row.get(2).unwrap(),
+                }))
+            })?;
 
-            if company.list.contains_key(&empl.department) {
-                let department_and_employees = company.list.get_mut(&empl.department).unwrap();
-                department_and_employees.push(empl.name);
-            } else {
-                company
-                    .list
-                    .insert(empl.department.clone(), vec![empl.name]);
-                company.departments.push(empl.department);
+            for employee in employees {
+                company.employees.push(employee.unwrap().clone());
             }
+
+            company.departments.push(dpt.clone());
         }
+
+        println!("{:#?}", company);
 
         Ok(company)
     }
 
-    pub fn add_entry(
-        &mut self,
-        department: String,
-        employee: String,
-        connection: &Connection,
-    ) -> Result<(), rusqlite::Error> {
-        let normalized_department = department.trim().to_lowercase();
-        let normalized_employee = employee.trim().to_string();
-        let employee_id = cuid::cuid2();
+    fn save(&self, db: &Database) -> Result<(), Box<dyn Error>> {
+        let events = self.get_uncommited_events();
 
-        if self.has_department(&normalized_department) {
-            let mut stmt = connection.prepare("SELECT id FROM departments WHERE name = $1")?;
-            let department_id: String =
-                stmt.query_row(&[&normalized_department], |row| row.get(0))?;
+        println!("{:#?}", events);
 
-            connection.execute(
-                "INSERT INTO employees (id, name, department_id) values (?1, ?2, ?3)",
-                &[&employee_id, &normalized_employee, &department_id],
-            )?;
-
-            let department_and_employees = self.list.get_mut(&normalized_department).unwrap();
-            department_and_employees.push(normalized_employee);
-
-            Ok(())
-        } else {
-            let department_id = cuid::cuid2();
-
-            connection.execute(
-                "INSERT INTO departments (id, name) values (?1, ?2)",
-                &[&department_id, &normalized_department],
-            )?;
-
-            connection.execute(
-                "INSERT INTO employees (id, name, department_id) values (?1, ?2, ?3)",
-                &[&employee_id, &normalized_employee, &department_id],
-            )?;
-
-            self.departments.push(normalized_department);
-            self.list.insert(
-                self.departments.last().unwrap().clone(),
-                vec![normalized_employee],
-            );
-
-            Ok(())
+        for domain_event in events.iter() {
+            match &domain_event.event {
+                CompanyEvents::DepartmentAdded(department) => {
+                    db.execute(
+                        "INSERT INTO departments (id, name) values (?1, ?2)",
+                        &[&department.id, &department.name],
+                    )?;
+                }
+                CompanyEvents::EmployeeHired(employee) => {
+                    db.execute(
+                        "INSERT INTO employees (id, name, department_id) values (?1, ?2, ?3)",
+                        &[&employee.id, &employee.name, &employee.department_id],
+                    )?;
+                }
+            }
         }
-    }
 
-    pub fn get_total_employees(&self) -> u32 {
-        self.list.iter().fold(0, |acc, (department, _)| {
-            acc + (self.list.get(department).unwrap().len() as u32)
-        })
-    }
-
-    fn has_department(&self, department: &String) -> bool {
-        self.departments.contains(department)
+        Ok(())
     }
 }
 
-//write test
+impl Company {
+    pub fn add_entry(&mut self, dept: String, empl: String) -> Result<(), rusqlite::Error> {
+        let department_name = dept.trim().to_lowercase();
+        let employee_name = empl.trim().to_string();
+        let employee_id = cuid::cuid2();
+        let employee: Rc<Employee>;
+
+        if let Some(department) = self.find_department(&department_name) {
+            employee = Rc::new(Employee {
+                id: employee_id,
+                name: employee_name,
+                department_id: department.id.clone(),
+            });
+
+            self.employees.push(Rc::clone(&employee));
+        } else {
+            let department_id = cuid::cuid2();
+
+            employee = Rc::new(Employee {
+                id: employee_id,
+                name: employee_name,
+                department_id: department_id.clone(),
+            });
+
+            self.employees.push(Rc::clone(&employee));
+
+            let department = Rc::new(Department {
+                id: department_id,
+                name: department_name,
+            });
+
+            self.departments.push(Rc::clone(&department));
+            self.apply(CompanyEvents::DepartmentAdded(Rc::clone(&department)));
+        }
+
+        self.apply(CompanyEvents::EmployeeHired(Rc::clone(&employee)));
+
+        Ok(())
+    }
+
+    pub fn get_total_employees(&self) -> u32 {
+        self.employees.len() as u32
+    }
+
+    pub fn get_employees_by_department(&self, department_id: &String) -> u32 {
+        self.employees
+            .iter()
+            .cloned()
+            .filter(|employee| *department_id == employee.department_id)
+            .collect::<Vec<Rc<Employee>>>()
+            .len() as u32
+    }
+
+    fn find_department(&self, department_name: &String) -> Option<&Rc<Department>> {
+        self.departments
+            .iter()
+            .find(|department| department.name == *department_name)
+    }
+}

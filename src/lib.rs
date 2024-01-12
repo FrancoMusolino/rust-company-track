@@ -1,16 +1,20 @@
 use colored::Colorize;
 use dialoguer::{theme::ColorfulTheme, Select};
-use rusqlite::Connection;
+use domain::Repository;
 use serde_json::json;
 use std::{
     collections::HashMap,
+    env,
     error::Error,
     fs::File,
     io::{stdin, Write},
     path::Path,
+    rc::Rc,
 };
 
 pub mod company;
+pub mod domain;
+use crate::company::Employee;
 pub use company::Company;
 
 #[derive(PartialEq)]
@@ -40,10 +44,18 @@ fn next_choice() -> Option<Possibilities> {
     }
 }
 
-pub fn run() -> Result<(), Box<dyn Error>> {
-    let connection = Connection::open("./db/company.db")?;
+type Database = rusqlite::Connection;
 
-    connection.execute(
+pub fn run() -> Result<(), Box<dyn Error>> {
+    let path = if env::var("PRODUCTION").is_ok() {
+        Path::new("./db/company.prod.db")
+    } else {
+        Path::new("./db/company.dev.db")
+    };
+
+    let db = rusqlite::Connection::open(path)?;
+
+    db.execute(
         "CREATE TABLE IF NOT EXISTS departments (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL UNIQUE
@@ -51,22 +63,23 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         [],
     )?;
 
-    connection.execute(
+    db.execute(
         "CREATE TABLE IF NOT EXISTS employees (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE,
-        department_id TEXT NOT NULL REFERENCES departments(id)
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            department_id TEXT NOT NULL REFERENCES departments(id)
     )",
         [],
     )?;
 
+    let mut company = Company::get(&db)?;
     let mut next = next_choice().unwrap();
 
     while next != Possibilities::Quit {
         match next {
-            Possibilities::AddEntry => add_new_entry(&connection)?,
-            Possibilities::ViewList => view_list(&connection)?,
-            Possibilities::GenerateReport => generate_report(&connection)?,
+            Possibilities::AddEntry => add_new_entry(&db, &mut company)?,
+            Possibilities::ViewList => view_list(&company)?,
+            Possibilities::GenerateReport => generate_report(&company)?,
             _ => (),
         }
 
@@ -76,13 +89,18 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn add_new_entry(connection: &Connection) -> Result<(), Box<dyn Error>> {
-    let mut company = Company::build_from_existing(&connection)?;
-
+fn add_new_entry(db: &Database, company: &mut Company) -> Result<(), Box<dyn Error>> {
     let employee = ask_for_employee()?;
-    let department = ask_for_department(&company.departments)?;
+    let department = ask_for_department(
+        &company
+            .departments
+            .iter()
+            .map(|department| department.name.clone())
+            .collect::<Vec<String>>(),
+    )?;
 
-    company.add_entry(department, employee, &connection)?;
+    company.add_entry(department, employee)?;
+    company.save(db)?;
 
     Ok(())
 }
@@ -114,19 +132,22 @@ fn ask_for_department(departments: &[String]) -> Result<String, Box<dyn Error>> 
     Ok(department)
 }
 
-fn view_list(connection: &Connection) -> Result<(), Box<dyn Error>> {
-    let company = Company::build_from_existing(&connection)?;
-
-    for department in company.list.keys() {
+fn view_list(company: &Company) -> Result<(), Box<dyn Error>> {
+    for department in company.departments.iter() {
         println!(
             "\n{}",
-            format!("Department {}", department).bold().underline()
+            format!("Department {}", department.name).bold().underline()
         );
 
-        let employees = company.list.get(department).unwrap();
+        let employees_in_department = company
+            .employees
+            .iter()
+            .cloned()
+            .filter(|employee| employee.department_id == department.id)
+            .collect::<Vec<Rc<Employee>>>();
 
-        for (i, employee) in employees.iter().enumerate() {
-            println!("{}. {}", i + 1, employee);
+        for (i, employee) in employees_in_department.iter().enumerate() {
+            println!("{}. {}", i + 1, employee.name);
         }
 
         println!();
@@ -135,22 +156,22 @@ fn view_list(connection: &Connection) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn generate_report(connection: &Connection) -> Result<(), Box<dyn Error>> {
-    let company = Company::build_from_existing(&connection)?;
-
+fn generate_report(company: &Company) -> Result<(), Box<dyn Error>> {
     let path = Path::new("report.json");
     let mut file = File::create(path)?;
 
     let total_employees = company.get_total_employees();
     let mut distribution: HashMap<&String, String> = HashMap::new();
 
-    for (department, employees) in company.list.iter() {
+    for department in company.departments.iter() {
+        let employees = company.get_employees_by_department(&department.id);
+
         distribution.insert(
-            department,
+            &department.name,
             format!(
                 "{:.2$}% ({} employees)",
-                ((employees.len() as f32) * 100.0) / (total_employees as f32),
-                employees.len(),
+                ((employees as f32) * 100.0) / (total_employees as f32),
+                employees,
                 2,
             ),
         );
