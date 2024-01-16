@@ -1,6 +1,6 @@
 use colored::Colorize;
 use dialoguer::{theme::ColorfulTheme, Select};
-use domain::Repository;
+use domain::{AggregateRoot, Repository};
 use serde_json::json;
 use std::{
     collections::HashMap,
@@ -19,7 +19,8 @@ pub use company::Company;
 
 #[derive(PartialEq)]
 enum Possibilities {
-    AddEntry,
+    AddDepartment,
+    HireEmployee,
     ViewList,
     GenerateReport,
     Quit,
@@ -27,19 +28,21 @@ enum Possibilities {
 
 fn next_choice() -> Option<Possibilities> {
     let selection = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("Do you want...")
-        .item("Add new entry")
-        .item("View list")
-        .item("Generate report")
-        .item("Quit")
+        .with_prompt("Quieres...")
+        .item("Añadir un nuevo departamento")
+        .item("Contratar empleado")
+        .item("Ver lista")
+        .item("Generar reporte")
+        .item("Salir")
         .interact()
         .unwrap();
 
     match selection {
-        0 => Some(Possibilities::AddEntry),
-        1 => Some(Possibilities::ViewList),
-        2 => Some(Possibilities::GenerateReport),
-        3 => Some(Possibilities::Quit),
+        0 => Some(Possibilities::AddDepartment),
+        1 => Some(Possibilities::HireEmployee),
+        2 => Some(Possibilities::ViewList),
+        3 => Some(Possibilities::GenerateReport),
+        4 => Some(Possibilities::Quit),
         _ => None,
     }
 }
@@ -77,7 +80,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 
     while next != Possibilities::Quit {
         match next {
-            Possibilities::AddEntry => add_new_entry(&db, &mut company)?,
+            Possibilities::AddDepartment => add_department(&db, &mut company)?,
+            Possibilities::HireEmployee => hire_employee(&db, &mut company)?,
             Possibilities::ViewList => view_list(&company)?,
             Possibilities::GenerateReport => generate_report(&company)?,
             _ => (),
@@ -89,8 +93,26 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn add_new_entry(db: &Database, company: &mut Company) -> Result<(), Box<dyn Error>> {
-    let employee = ask_for_employee()?;
+fn add_department(db: &Database, company: &mut Company) -> Result<(), Box<dyn Error>> {
+    let department = ask_for_stdin("Ingrese el nuevo departamento")?;
+
+    if let Err(err) = company.add_department(department) {
+        eprintln!("{err}");
+    } else {
+        company.save(db)?;
+        company.commit();
+    };
+
+    Ok(())
+}
+
+fn hire_employee(db: &Database, company: &mut Company) -> Result<(), Box<dyn Error>> {
+    if company.departments.len() == 0 {
+        eprintln!("Primero debe añadir un departamento");
+        return Ok(());
+    }
+
+    let employee = ask_for_stdin("Ingrese el nombre del empleado")?;
     let department = ask_for_department(
         &company
             .departments
@@ -99,35 +121,31 @@ fn add_new_entry(db: &Database, company: &mut Company) -> Result<(), Box<dyn Err
             .collect::<Vec<String>>(),
     )?;
 
-    company.add_entry(department, employee)?;
-    company.save(db)?;
+    if let Err(err) = company.hire_employee(employee, department) {
+        eprintln!("{err}");
+    } else {
+        company.save(db)?;
+        company.commit();
+    };
 
     Ok(())
 }
 
-fn ask_for_employee() -> Result<String, Box<dyn Error>> {
-    let mut employee = String::new();
-    println!("Enter the employee's name");
-    stdin().read_line(&mut employee)?;
+fn ask_for_stdin(label: &str) -> Result<String, Box<dyn Error>> {
+    let mut input = String::new();
+    println!("{label}");
+    stdin().read_line(&mut input)?;
 
-    Ok(employee)
+    Ok(input)
 }
 
 fn ask_for_department(departments: &[String]) -> Result<String, Box<dyn Error>> {
-    let mut department = String::new();
-
     let selection = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("Choose an existing department or create one")
+        .with_prompt("Seleccione un departamento")
         .items(departments)
-        .item("New")
         .interact()?;
 
-    if selection + 1 > departments.len() {
-        println!("Enter the department's name");
-        stdin().read_line(&mut department)?;
-    } else {
-        department = departments.get(selection).unwrap().to_owned();
-    }
+    let department = departments.get(selection).unwrap().to_owned();
 
     Ok(department)
 }
@@ -136,7 +154,9 @@ fn view_list(company: &Company) -> Result<(), Box<dyn Error>> {
     for department in company.departments.iter() {
         println!(
             "\n{}",
-            format!("Department {}", department.name).bold().underline()
+            format!("Departamento {}", department.name)
+                .bold()
+                .underline()
         );
 
         let employees_in_department = company
@@ -145,6 +165,10 @@ fn view_list(company: &Company) -> Result<(), Box<dyn Error>> {
             .cloned()
             .filter(|employee| employee.department_id == department.id)
             .collect::<Vec<Rc<Employee>>>();
+
+        if employees_in_department.len() == 0 {
+            println!("Sin empleados");
+        }
 
         for (i, employee) in employees_in_department.iter().enumerate() {
             println!("{}. {}", i + 1, employee.name);

@@ -109,43 +109,49 @@ impl Repository<CompanyEvents, Company> for Company {
 }
 
 impl Company {
-    pub fn add_entry(&mut self, dept: String, empl: String) -> Result<(), rusqlite::Error> {
-        let department_name = dept.trim().to_lowercase();
-        let employee_name = empl.trim().to_string();
-        let employee_id = cuid::cuid2();
-        let employee: Rc<Employee>;
+    pub fn add_department(&mut self, department_name: String) -> Result<(), String> {
+        let department_name = department_name.trim().to_lowercase();
 
+        if self.find_department(&department_name).is_some() {
+            return Err(format!(
+                "El departamento {} ya forma parte de la compañía",
+                department_name
+            ));
+        }
+
+        let department = Rc::new(Department {
+            id: cuid::cuid2(),
+            name: department_name,
+        });
+
+        self.departments.push(Rc::clone(&department));
+        self.apply(CompanyEvents::DepartmentAdded(Rc::clone(&department)));
+
+        Ok(())
+    }
+
+    pub fn hire_employee(
+        &mut self,
+        employee_name: String,
+        department_name: String,
+    ) -> Result<(), String> {
         if let Some(department) = self.find_department(&department_name) {
-            employee = Rc::new(Employee {
-                id: employee_id,
-                name: employee_name,
+            let employee = Rc::new(Employee {
+                id: cuid::cuid2(),
+                name: employee_name.trim().to_string(),
                 department_id: department.id.clone(),
             });
 
             self.employees.push(Rc::clone(&employee));
+            self.apply(CompanyEvents::EmployeeHired(Rc::clone(&employee)));
+
+            Ok(())
         } else {
-            let department_id = cuid::cuid2();
-
-            employee = Rc::new(Employee {
-                id: employee_id,
-                name: employee_name,
-                department_id: department_id.clone(),
-            });
-
-            self.employees.push(Rc::clone(&employee));
-
-            let department = Rc::new(Department {
-                id: department_id,
-                name: department_name,
-            });
-
-            self.departments.push(Rc::clone(&department));
-            self.apply(CompanyEvents::DepartmentAdded(Rc::clone(&department)));
+            Err(format!(
+                "No se ha encontrado el departamento {}",
+                department_name
+            ))
         }
-
-        self.apply(CompanyEvents::EmployeeHired(Rc::clone(&employee)));
-
-        Ok(())
     }
 
     pub fn get_total_employees(&self) -> u32 {
