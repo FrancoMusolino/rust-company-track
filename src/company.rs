@@ -10,6 +10,7 @@ use cuid;
 pub enum CompanyEvents {
     DepartmentAdded(Rc<Department>),
     EmployeeHired(Rc<Employee>),
+    // FireEmployee
 }
 
 #[derive(Debug)]
@@ -171,5 +172,76 @@ impl Company {
         self.departments
             .iter()
             .find(|department| department.name == *department_name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_department_works() {
+        let mut company = Company::default();
+        company.add_department("sales".to_string()).unwrap();
+        assert_eq!(company.departments.len(), 1);
+    }
+
+    #[test]
+    fn hire_employee_works() {
+        let mut company = Company::default();
+        company.add_department("sales".to_string()).unwrap();
+        company
+            .hire_employee("Juan".to_string(), "sales".to_string())
+            .unwrap();
+
+        assert_eq!(company.employees.len(), 1);
+    }
+
+    #[test]
+    #[should_panic]
+    fn add_same_department_twice() {
+        let mut company = Company::default();
+        company.add_department("sales".to_string()).unwrap();
+        company.add_department("sales".to_string()).unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn hire_employee_with_unexisting_department() {
+        let mut company = Company::default();
+
+        company
+            .hire_employee("Juan".to_string(), "sales".to_string())
+            .unwrap();
+    }
+
+    // DDD stuff
+
+    #[test]
+    fn should_apply_events() {
+        let mut company = Company::default();
+        company.add_department("sales".to_string()).unwrap();
+        company
+            .hire_employee("Juan".to_string(), "sales".to_string())
+            .unwrap();
+
+        assert_eq!(company.get_uncommited_events().len(), 2);
+        assert_eq!(Rc::strong_count(company.departments.first().unwrap()), 2);
+        assert_eq!(Rc::strong_count(company.employees.first().unwrap()), 2);
+    }
+
+    #[test]
+    fn should_commit_events() {
+        let mut company = Company::default();
+        company.add_department("sales".to_string()).unwrap();
+        company
+            .hire_employee("Juan".to_string(), "sales".to_string())
+            .unwrap();
+
+        company.commit();
+
+        assert_eq!(company.get_uncommited_events().len(), 0);
+        assert_eq!(Rc::strong_count(company.departments.first().unwrap()), 1);
+        assert_eq!(Rc::strong_count(company.employees.first().unwrap()), 1);
     }
 }
